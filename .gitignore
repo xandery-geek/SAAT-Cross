@@ -1,0 +1,13 @@
+.idea/
+.vscode/
+log/
+checkpoint/
+tmp/
+documents/
+__pycache__/
+plot/
+
+*.iml
+*.sh
+.DS_Store
+tmp*
