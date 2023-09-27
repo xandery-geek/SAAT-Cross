@@ -15,11 +15,15 @@ def get_generator(name):
 def log_results(log_dir, log_file, desc, data):
     logger = FileLogger(log_dir, log_file)
     logger.log(desc)
-    for key, val in data:
-        logger.log(key + ': {:5f}'.format(val))
+    for key, val in data.items():
+        if isinstance(val, float):
+            logger.log(key + ': {:5f}'.format(val))
+        else:
+            logger.log(key + ': {}'.format(val))
 
 
 def generate_mainstay_code(label, train_code, train_label):
+    label, train_label = label.float(), train_label.float()
     B = label.size(0)  # batch size
     N = train_label.size(0)  # number of training data
 
@@ -93,15 +97,17 @@ def attack(model, adv_generator, test_loader, mainstay_codes, modality='image'):
     perceptibility = torch.tensor([0, 0, 0], dtype=torch.float)
 
     query_code_list, adv_code_list = [], []
+    num_test = 0
 
     for i, batch in enumerate(tqdm(test_loader)):
-        query, idx = batch_preprocess(batch)
+        query, idx = batch_preprocess(batch, modality)
         mainstay_code = mainstay_codes[idx]
 
-        batch_size_ = query.size(0)
-        adv_query = adv_generator(query, mainstay_code)
+        batch_size = query.size(0)
+        num_test += batch_size
+        adv_query = adv_generator(query, mainstay_code, modality)
 
-        perceptibility += cal_perceptibility(query.cpu().detach(), adv_query.cpu().detach()) * batch_size_
+        perceptibility += cal_perceptibility(query.cpu().detach(), adv_query.cpu().detach()) * batch_size
 
         if modality == 'image':
             query_code = feature2code(model.encode_img(query))
@@ -115,7 +121,7 @@ def attack(model, adv_generator, test_loader, mainstay_codes, modality='image'):
 
     return np.concatenate(query_code_list), \
             np.concatenate(adv_code_list), \
-            perceptibility / len(test_loader)
+            perceptibility / num_test
 
 
 def mainstay_attack(args):
@@ -127,11 +133,11 @@ def mainstay_attack(args):
 
     # load dataset
     database_loader, _ = get_data_loader(args.data_dir, args.dataset, 'database',
-                                         args.bs, shuffle=False)
+                                         batch_size=args.bs, shuffle=False)
     train_loader, _ = get_data_loader(args.data_dir, args.dataset, 'train',
-                                      args.bs, shuffle=True)
+                                      batch_size=args.bs, shuffle=True)
     test_loader, _ = get_data_loader(args.data_dir, args.dataset, 'test',
-                                     args.bs, shuffle=False)
+                                     batch_size=args.bs, shuffle=False)
 
     # load hashcode and labels
     db_img_codes, db_txt_codes, _ = get_database_code(model, database_loader, attack_model)
@@ -145,11 +151,10 @@ def mainstay_attack(args):
         torch.from_numpy(train_labels).cuda()
 
     target_label = generate_target_label(args.dataset, test_label, db_label)
-    target_label = target_label.cuda()
 
     # attack image
     adv_generator = get_generator(args.generator)(model, args.img_eps, iteration=args.iteration, targeted=args.targeted)
-    mainstay_codes = generate_mainstay_code(target_label, train_txt_codes, train_labels)
+    mainstay_codes = generate_mainstay_code(torch.from_numpy(target_label).cuda(), train_txt_codes, train_labels)
     query_code_arr, adv_code_arr, perceptibility = attack(model, adv_generator, test_loader, mainstay_codes, modality='image')
 
     # save code
@@ -158,11 +163,11 @@ def mainstay_attack(args):
 
     # calculate map
     map_dict = {}
-    mainstay_code_arr = mainstay_codes.cpu().numpy()
+    mainstay_code_arr = mainstay_codes.cpu().numpy() if args.targeted else - mainstay_codes.cpu().numpy()
 
-    map_dict['ori_i2t_map'] = cal_map(query_code_arr, test_label, db_txt_codes, db_label)
-    map_dict['adv_i2t_map'] = cal_map(adv_code_arr, target_label, db_txt_codes, db_label)
-    map_dict['the_i2t_map'] = cal_map(mainstay_code_arr, target_label, db_txt_codes, db_label)
+    map_dict['ori_i2t_map'] = cal_map(query_code_arr, test_label, db_txt_codes, db_label, top_k=None)
+    map_dict['adv_i2t_map'] = cal_map(adv_code_arr, target_label, db_txt_codes, db_label, top_k=None)
+    map_dict['the_i2t_map'] = cal_map(mainstay_code_arr, target_label, db_txt_codes, db_label, top_k=None)
     map_dict['i2t_per'] = perceptibility
 
     log_results(log_dir=os.path.join('log', attack_model), 
@@ -172,7 +177,7 @@ def mainstay_attack(args):
     
     # attack text
     adv_generator = get_generator(args.generator)(model, args.txt_eps, iteration=args.iteration, targeted=args.targeted)
-    mainstay_codes = generate_mainstay_code(target_label, train_img_codes, train_labels)
+    mainstay_codes = generate_mainstay_code(torch.from_numpy(target_label).cuda(), train_img_codes, train_labels)
     query_code_arr, adv_code_arr, perceptibility = attack(model, adv_generator, test_loader, mainstay_codes, modality='text')
 
     # save code
@@ -181,11 +186,11 @@ def mainstay_attack(args):
 
     # calculate map
     map_dict = {}
-    mainstay_code_arr = mainstay_codes.cpu().numpy()
+    mainstay_code_arr = mainstay_codes.cpu().numpy() if args.targeted else - mainstay_codes.cpu().numpy()
 
-    map_dict['ori_t2i_map'] = cal_map(query_code_arr, test_label, db_img_codes, db_label)
-    map_dict['adv_t2i_map'] = cal_map(adv_code_arr, target_label, db_img_codes, db_label)
-    map_dict['the_t2i_map'] = cal_map(mainstay_code_arr, target_label, db_img_codes, db_label)
+    map_dict['ori_t2i_map'] = cal_map(query_code_arr, test_label, db_img_codes, db_label, top_k=None)
+    map_dict['adv_t2i_map'] = cal_map(adv_code_arr, target_label, db_img_codes, db_label, top_k=None)
+    map_dict['the_t2i_map'] = cal_map(mainstay_code_arr, target_label, db_img_codes, db_label, top_k=None)
     map_dict['t2i_per'] = perceptibility
 
     log_results(log_dir=os.path.join('log', attack_model), 
