@@ -14,7 +14,7 @@ def load_model(path):
     return model
 
 
-def get_attack_model_name(args):
+def get_victim_model_name(args):
     attack_model = '{}_{}_{}-{}_{}'.format(args.dataset, args.hash_method, args.img_backbone, args.txt_backbone, args.bit)
     if args.adv:
         attack_model = '{}_{}'.format(args.adv_method, attack_model)
@@ -39,14 +39,17 @@ def generate_code(model, data_loader):
 
 
 def generate_code_ordered(model, data_loader, num_data, bit, num_class):
-    code = torch.zeros([num_data, bit]).cuda()
-    label = torch.zeros(num_data, num_class).cuda()
-    for it, data in enumerate(data_loader, 0):
-        data_input, data_label, data_ind = data
-        output = model(data_input.cuda())
-        code[data_ind, :] = torch.sign(output.data)
-        label[data_ind, :] = data_label.cuda()
-    return code, label
+    img_codes = torch.zeros([num_data, bit])
+    txt_codes = torch.zeros([num_data, bit])
+    labels = torch.zeros(num_data, num_class)
+
+    for img, txt, label, idx in data_loader:
+        img, txt = img.cuda(), txt.cuda()
+        img_code, txt_code = model(img, txt)
+        img_codes[idx, :] = img_code.data.cpu()
+        txt_codes[idx, :] = txt_code.data.cpu()
+        labels[idx, :] = label
+    return img_codes.sign().numpy(), txt_codes.sign().numpy(), labels.numpy()
 
 
 def get_database_code(model, dataloader, attack_model):

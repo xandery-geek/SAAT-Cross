@@ -1,9 +1,6 @@
-import os
 import torch
-import argparse
-import utils.argument as argument
-from mainstay_attack import generate_mainstay_code
-from model.utils import load_model, generate_code_ordered
+from mainstay_attack import generate_mainstay_code, get_generator
+from model.utils import load_model, generate_code_ordered, get_victim_model_name
 from utils.utils import check_dir
 from utils.data import get_data_loader, get_classes_num
 
@@ -13,111 +10,106 @@ def adv_loss(adv_code, target_code):
     return loss
 
 
-def adv_generator(model, query, target_hash, epsilon, step=2, iteration=7, alpha=1.0):
-    delta = torch.zeros_like(query).cuda()
-    delta.uniform_(-epsilon, epsilon)
-    delta.data = (query.data + delta.data).clamp(0, 1) - query.data
-    delta.requires_grad = True
-
-    for i in range(iteration):
-        adv_code = model(query + delta, alpha)
-        loss = adv_loss(adv_code, target_hash.detach())
-        loss.backward()
-
-        delta.data = delta - step / 255 * torch.sign(delta.grad.detach())
-        delta.data = delta.data.clamp(-epsilon, epsilon)
-        delta.data = (query.data + delta.data).clamp(0, 1) - query.data
-        delta.grad.zero_()
-
-    return query + delta.detach()
+def mainstay_training(args):
+    print("=> lambda: {}, mu: {}".format(args.lam, args.mu))
 
 
-def parser_arguments():
-    parser = argparse.ArgumentParser()
-
-    parser = argument.add_base_arguments(parser)
-    parser = argument.add_dataset_arguments(parser)
-    parser = argument.add_model_arguments(parser)
-
-    # arguments for defense
-    parser = argument.add_defense_arguments(parser)
-    parser.add_argument('--epochs', dest='epochs', type=int, default=20, help='number of training epochs')
-    parser.add_argument('--iteration', dest='iteration', type=int, default=7, help='iteration of adversarial attack')
-    
-    # arguments for dataset
-    parser.add_argument('--batch_size', dest='batch_size', type=int, default=32, help='number of images in one batch')
-    return parser.parse_args()
+    victim_model_name = get_victim_model_name(args)
+    model = load_model('checkpoint/{}.pth'.format(victim_model_name))
 
 
-def saat(args, epsilon=8 / 255.0):
-    print("=> lambda: {}, mu: {}".format(args.p_lambda, args.p_mu))
-
-    os.environ["CUDA_VISIBLE_DEVICES"] = args.device
     train_loader, num_train = get_data_loader(args.data_dir, args.dataset, 'train',
-                                              args.batch_size, shuffle=True)
-
-    attack_model = '{}_{}_{}_{}'.format(args.dataset, args.hash_method, args.backbone, args.bit)
-    model_path = 'checkpoint/{}.pth'.format(attack_model)
-    model = load_model(model_path)
-
-    print("Generating train code and label")
-    train_code, train_label = generate_code_ordered(model, train_loader, num_train, args.bit,
+                                      batch_size=args.bs, shuffle=True)
+    
+    print("Generating codes and labels of training set")
+    train_img_codes, train_txt_codes, train_labels = generate_code_ordered(model, train_loader, num_train, args.bit,
                                                     get_classes_num(args.dataset))
+    train_img_codes, train_txt_codes, train_labels = torch.from_numpy(train_img_codes).cuda(), \
+        torch.from_numpy(train_txt_codes).cuda(), \
+        torch.from_numpy(train_labels).cuda()
 
     model.train()
-    U_ben = torch.zeros(num_train, args.bit).cuda()
-    U_ben.data = train_code.data
+    F_ben = torch.zeros(num_train, args.bit).cuda()
+    G_ben = torch.zeros(num_train, args.bit).cuda()
+    F_ben.data = train_img_codes.data
+    G_ben.data = train_txt_codes.data
 
-    # initialize `U` and `Y` of hashing model
-    if hasattr(model, 'U') and hasattr(model, 'Y'):
-        model.U.data = train_code.data
-        model.Y.data = train_label.data
+    # initialize buffers of hashing model
+    if hasattr(model, 'F_buffer') and hasattr(model, 'G_buffer') and hasattr(model, 'label_buffer'):
+        model.F_buffer.data = train_img_codes.data
+        model.G_buffer.data = train_txt_codes.data
+        model.label_buffer.data = train_labels.data
+        model.update_hash_codes()
 
-    optimizer = torch.optim.SGD(model.parameters(), lr=0.05, weight_decay=1e-5)
+    optimizer_img = torch.optim.SGD(model.img_net.parameters(), lr=0.05, weight_decay=1e-5)
+    optimizer_txt = torch.optim.SGD(model.txt_net.parameters(), lr=0.05, weight_decay=1e-5)
     lr_steps = args.epochs * len(train_loader)
-    scheduler = torch.optim.lr_scheduler.MultiStepLR(optimizer, milestones=[lr_steps / 2, lr_steps * 3 / 4], gamma=0.1)
+    scheduler_img = torch.optim.lr_scheduler.MultiStepLR(optimizer_img, milestones=[lr_steps/2, lr_steps*3/4], gamma=0.1)
+    scheduler_txt = torch.optim.lr_scheduler.MultiStepLR(optimizer_txt, milestones=[lr_steps/2, lr_steps*3/4], gamma=0.1)
+
+    img_generator = get_generator(args.generator)(model, args.img_eps, iteration=args.iteration)
+    txt_generator = get_generator(args.generator)(model, args.txt_eps, iteration=args.iteration)
 
     # adversarial training
     for epoch in range(args.epochs):
-        epoch_loss = 0
-        for it, (query, label, idx) in enumerate(train_loader):
-            query, label = query.cuda(), label.cuda()
+        img_loss = 0
+        for i, (img, txt, label, idx) in enumerate(train_loader):
+            img, txt, label = img.cuda(), txt.cuda(), label.cuda()
 
             # inner minimization aims to generate adversarial examples
-            mainstay_code = generate_mainstay_code(label, U_ben, train_label)
-            adv_query = adv_generator(model, query, mainstay_code, epsilon, step=2, iteration=args.iteration)
+            mainstay_code = generate_mainstay_code(label, model.F_buffer, train_labels)
+            adv_img = img_generator(img, mainstay_code, modality='image')
 
             # outer maximization aims to optimize parameters of model
             model.zero_grad()
-            adv_code = model(adv_query)
-            ben_code = model(query)
-            U_ben[idx, :] = torch.sign(ben_code.data)
-            mainstay_code = generate_mainstay_code(label, U_ben, train_label)
-
-            loss_hash_ben = model.loss_function(ben_code, label, idx)
+            adv_code = model.encode_img(adv_img)
+            loss_ben = model.loss_function((img, txt, label, idx), 0)
             loss_adv = - adv_loss(adv_code, mainstay_code)
             loss_qua = torch.mean((adv_code - torch.sign(adv_code)) ** 2)
-            loss = args.p_lambda * loss_adv + args.p_mu * loss_qua + loss_hash_ben
+            loss = args.lam * loss_adv + args.mu * loss_qua + loss_ben
             loss.backward()
-            optimizer.step()
-            scheduler.step()
-            epoch_loss += loss.item()
+            optimizer_img.step()
+            scheduler_img.step()
+            img_loss += loss.item()
 
-            if it % 50 == 0:
-                print("loss: {:.5f}\tben: {:.5f}\tadv: {:.5f}\tqua: {:.5f}".format(loss, loss_hash_ben.item(),
+            if i % 50 == 0:
+                print("loss: {:.5f}\tben: {:.5f}\tadv: {:.5f}\tqua: {:.5f}".format(loss, loss_ben.item(),
                                                                      loss_adv.item(), loss_qua.item()))
 
-        print('Epoch: %3d/%3d\tTrain_loss: %3.5f \n' % (epoch, args.epochs, epoch_loss / len(train_loader)))
+        print('Epoch: %3d/%3d\tImage training loss: %3.5f \n' % (epoch, args.epochs, img_loss/len(train_loader)))
 
-    if args.p_lambda != 1.0 or args.p_mu != 1e-4:
-        robust_model = 'saat_{}_{}_{}'.format(attack_model, args.p_lambda, args.p_mu)
+        txt_loss = 0
+        for i, (img, txt, label, idx) in enumerate(train_loader):
+            img, txt, label = img.cuda(), txt.cuda(), label.cuda()
+
+            # inner minimization aims to generate adversarial examples
+            mainstay_code = generate_mainstay_code(label, model.G_buffer, train_labels)
+            adv_txt = txt_generator(txt, mainstay_code, modality='text')
+
+            # outer maximization aims to optimize parameters of model
+            model.zero_grad()
+            adv_code = model.encode_img(adv_txt)
+            loss_ben = model.loss_function((img, txt, label, idx), 1)
+            loss_adv = - adv_loss(adv_code, mainstay_code)
+            loss_qua = torch.mean((adv_code - torch.sign(adv_code)) ** 2)
+            loss = args.lam * loss_adv + args.mu * loss_qua + loss_ben
+            loss.backward()
+            optimizer_txt.step()
+            scheduler_txt.step()
+            txt_loss += loss.item()
+
+            if i % 50 == 0:
+                print("loss: {:.5f}\tben: {:.5f}\tadv: {:.5f}\tqua: {:.5f}".format(loss, loss_ben.item(),
+                                                                     loss_adv.item(), loss_qua.item()))
+        model.update_hash_codes()
+
+        print('Epoch: %3d/%3d\tText training loss: %3.5f \n' % (epoch, args.epochs, txt_loss/len(train_loader)))
+
+    if args.lam != 1.0 or args.mu != 1e-4:
+        robust_model_name = 'saat_{}_{}_{}'.format(victim_model_name, args.lam, args.mu)
     else:
-        robust_model = 'saat_{}'.format(attack_model)
+        robust_model_name = 'saat_{}'.format(victim_model_name)
 
-    check_dir('log/{}'.format(robust_model))
-    robust_model_path = 'checkpoint/{}.pth'.format(robust_model)
+    check_dir('log/{}'.format(robust_model_name))
+    robust_model_path = 'checkpoint/{}.pth'.format(robust_model_name)
     torch.save(model, robust_model_path)
-
-
-if __name__ == '__main__':
-    saat(parser_arguments())

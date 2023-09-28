@@ -1,11 +1,13 @@
 import os
 import torch
 import numpy as np
+import argparse
+import utils.argument as argument
 from tqdm import tqdm
-from model.utils import get_attack_model_name, load_model, generate_code, get_database_code
+from model.utils import get_victim_model_name, load_model, generate_code, get_database_code
 from utils.data import get_data_loader, load_label
-from eval.metrics import cal_map, cal_perceptibility
 from utils.utils import FileLogger, import_class
+from eval.metrics import cal_hamming_dis, cal_map, cal_perceptibility
 
 
 def get_generator(name):
@@ -124,23 +126,28 @@ def attack(model, adv_generator, test_loader, mainstay_codes, modality='image'):
             perceptibility / num_test
 
 
-def mainstay_attack(args):
-    method = 'Mainstay' + ('_T' if args.targeted else '')
-    # load model
-    attack_model = get_attack_model_name(args)
-    model_path = 'checkpoint/{}.pth'.format(attack_model)
-    model = load_model(model_path)
-
-    # load dataset
-    database_loader, _ = get_data_loader(args.data_dir, args.dataset, 'database',
+def load_dataset(args):
+    db_loader, _ = get_data_loader(args.data_dir, args.dataset, 'database',
                                          batch_size=args.bs, shuffle=False)
     train_loader, _ = get_data_loader(args.data_dir, args.dataset, 'train',
                                       batch_size=args.bs, shuffle=True)
     test_loader, _ = get_data_loader(args.data_dir, args.dataset, 'test',
                                      batch_size=args.bs, shuffle=False)
+    
+    return train_loader, test_loader, db_loader
+
+
+def mainstay_attack(args):
+    attack_name = 'Mainstay' + ('_T' if args.targeted else '')
+    # load model
+    victim_model = get_victim_model_name(args)
+    model = load_model('checkpoint/{}.pth'.format(victim_model))
+
+    # load dataset
+    train_loader, test_loader, db_loader = load_dataset(args)
 
     # load hashcode and labels
-    db_img_codes, db_txt_codes, _ = get_database_code(model, database_loader, attack_model)
+    db_img_codes, db_txt_codes, _ = get_database_code(model, db_loader, victim_model)
     test_label = load_label(args.data_dir, args.dataset, 'test')
     db_label = load_label(args.data_dir, args.dataset, 'database')
 
@@ -158,8 +165,8 @@ def mainstay_attack(args):
     query_code_arr, adv_code_arr, perceptibility = attack(model, adv_generator, test_loader, mainstay_codes, modality='image')
 
     # save code
-    np.save(os.path.join('log', attack_model, 'ori_img_code.npy'), query_code_arr)
-    np.save(os.path.join('log', attack_model, '{}_img_code.npy'.format(method)), adv_code_arr)
+    np.save(os.path.join('log', victim_model, 'ori_img_code.npy'), query_code_arr)
+    np.save(os.path.join('log', victim_model, '{}_img_code.npy'.format(attack_name)), adv_code_arr)
 
     # calculate map
     map_dict = {}
@@ -170,9 +177,9 @@ def mainstay_attack(args):
     map_dict['the_i2t_map'] = cal_map(mainstay_code_arr, target_label, db_txt_codes, db_label, top_k=None)
     map_dict['i2t_per'] = perceptibility
 
-    log_results(log_dir=os.path.join('log', attack_model), 
-                log_file='{}.txt'.format(method),
-                desc='I2T Attack: {}'.format(method),
+    log_results(log_dir=os.path.join('log', victim_model), 
+                log_file='{}.txt'.format(attack_name),
+                desc='I2T Attack: {}'.format(attack_name),
                 data=map_dict)
     
     # attack text
@@ -181,8 +188,8 @@ def mainstay_attack(args):
     query_code_arr, adv_code_arr, perceptibility = attack(model, adv_generator, test_loader, mainstay_codes, modality='text')
 
     # save code
-    np.save(os.path.join('log', attack_model, 'ori_txt_code.npy'), query_code_arr)
-    np.save(os.path.join('log', attack_model, '{}_txt_code.npy'.format(method)), adv_code_arr)
+    np.save(os.path.join('log', victim_model, 'ori_txt_code.npy'), query_code_arr)
+    np.save(os.path.join('log', victim_model, '{}_txt_code.npy'.format(attack_name)), adv_code_arr)
 
     # calculate map
     map_dict = {}
@@ -193,8 +200,125 @@ def mainstay_attack(args):
     map_dict['the_t2i_map'] = cal_map(mainstay_code_arr, target_label, db_img_codes, db_label, top_k=None)
     map_dict['t2i_per'] = perceptibility
 
-    log_results(log_dir=os.path.join('log', attack_model), 
-                log_file='{}.txt'.format(method),
-                desc='T2I Attack: {}'.format(method),
+    log_results(log_dir=os.path.join('log', victim_model), 
+                log_file='{}.txt'.format(attack_name),
+                desc='T2I Attack: {}'.format(attack_name),
                 data=map_dict)
 
+
+def ann_retrieve(query_codes, db_codes, top):
+    # calculate top index
+    retrieval_indices = []
+    for query in query_codes:
+        hamming_dis = cal_hamming_dis(query, db_codes)
+        sort_idx = np.argsort(hamming_dis)
+        retrieval_indices.append(sort_idx[:top])
+
+    return retrieval_indices
+
+
+def save_retrieval_results(filename, query_id, retrieval_id):
+
+    data = []
+    data.append('query id:[retrieval id]')
+    for i in len(query_id):
+        data.append('{}:{}'.format(query_id[i], ','.join(map(str, retrieval_id[i]))))
+
+    with open(filename, 'w') as f:
+        f.writelines(data)
+
+
+def sample_or_retrieve(args):
+    victim_model = get_victim_model_name(args)
+    model = load_model('checkpoint/{}.pth'.format(victim_model))
+
+    # load dataset
+    train_loader, test_loader, db_loader = load_dataset(args)
+    
+    db_img_codes, db_txt_codes, _ = get_database_code(model, db_loader, victim_model)
+    test_label = load_label(args.data_dir, args.dataset, 'test')
+    db_label = load_label(args.data_dir, args.dataset, 'database')
+
+    # generate hashcode and labels for training set
+    train_img_codes, train_txt_codes, train_labels = generate_code(model, train_loader)
+    train_img_codes, train_txt_codes, train_labels = torch.from_numpy(train_img_codes).cuda(), \
+        torch.from_numpy(train_txt_codes).cuda(), \
+        torch.from_numpy(train_labels).cuda()
+
+    target_label = generate_target_label(args.dataset, test_label, db_label)
+    
+    # attack image
+    adv_generator = get_generator(args.generator)(model, args.img_eps, iteration=args.iteration, targeted=args.targeted)
+    mainstay_codes = generate_mainstay_code(torch.from_numpy(target_label).cuda(), train_txt_codes, train_labels)
+    
+    modality = args.modality
+    save_pth = os.path.join('log', victim_model)
+    for i, batch in enumerate(tqdm(test_loader)):
+        if i == args.batch_id:
+            query, idx = batch_preprocess(batch, modality)
+            query, idx = query[:args.sample_num], idx[:args.sample_num]
+            mainstay_code = mainstay_codes[idx]
+
+            adv_query = adv_generator(query, mainstay_code, modality)
+
+            if args.sample:
+                print("Sampling data of {}-th batch".format(i))
+
+                ori_data, adv_data = query.cpu().numpy(), adv_query.cpu().numpy()
+                np.save(save_pth + '/ori-{}-{}-{}.npy'.format(modality, idx[0], idx[-1]), ori_data)
+                np.save(save_pth + '/adv-{}-{}-{}.npy'.format(modality, idx[0], idx[-1]), adv_data)
+
+            if args.retrieve:
+                print("Retrieving data of {}-th batch".format(i))
+
+                if modality == 'image':
+                    query_code = feature2code(model.encode_img(query))
+                    adv_code = feature2code(model.encode_img(adv_query))
+                    ori_results = ann_retrieve(query_code, db_txt_codes)
+                    adv_results = ann_retrieve(adv_code, db_txt_codes)
+                else:
+                    query_code = feature2code(model.encode_txt(query))
+                    adv_code = feature2code(model.encode_txt(adv_query))
+                    ori_results = ann_retrieve(query_code, db_img_codes)
+                    adv_results = ann_retrieve(adv_code, db_img_codes)
+
+                save_retrieval_results(save_pth + '/ori-{}-{}-{}.txt'.format(modality, idx[0], idx[-1]), idx, ori_results)
+                save_retrieval_results(save_pth + '/adv-{}-{}-{}.txt'.format(modality, idx[0], idx[-1]), idx, adv_results)
+
+            break
+
+def parser_arguments():
+    parser = argparse.ArgumentParser()
+    
+    parser = argument.add_base_arguments(parser)
+    parser = argument.add_dataset_arguments(parser)
+    parser = argument.add_model_arguments(parser)
+    parser = argument.add_attack_arguments(parser)
+    
+    # arguments for defense
+    parser.add_argument('--adv', dest='adv', action="store_true", default=False,
+                        help='load model with adversarial training')
+    parser = argument.add_defense_arguments(parser)
+
+    # arguments for dataset
+    parser.add_argument('--bs', dest='bs', type=int, default=128, help='number of images in one batch')
+    
+    # arguments for sampling or retrieval
+    parser.add_argument('--batch_id', dest='batch_id', type=int, default=0, help='batch index for sampling or retrieval')
+    parser.add_argument('--modality', dest='modality', default='image', choices=['image', 'text'], help='query modality')
+    parser.add_argument('--sample_num', dest='sample_num', type=int, default=10, help='number of sampling')
+    parser.add_argument('--retrieval_num', dest='retrieval_num', type=int, default=10, help='number of retrieval')
+
+    return parser.parse_args()
+
+
+if __name__ == '__main__':
+
+    args = parser_arguments()
+    os.environ["CUDA_VISIBLE_DEVICES"] = args.device
+
+    print("Current Method: {}".format(args.attack_method))
+    if args.sample or args.retrieve:
+        sample_or_retrieve(args)
+    else:
+        mainstay_attack(args)

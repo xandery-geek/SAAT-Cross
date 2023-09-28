@@ -35,7 +35,7 @@ def add_attack_arguments(parser):
     parser.add_argument('--attack_method', dest='attack_method', default='mainstay', help='name of attack method')
     parser.add_argument('--generator', dest='generator', default='PGD', help='adversarial examples generator')
     parser.add_argument('--targeted', dest='targeted', action="store_true", default=False, help='targeted attack')
-    parser.add_argument('--iteration', dest='iteration', type=int, default=100, help='number of training iteration')
+    parser.add_argument('--iteration', dest='iteration', type=int, default=100, help='iteration of adversarial attack')
     parser.add_argument('--img_eps', dest='img_eps', type=float, default=8/255., help='perturbation budget of image data')
     parser.add_argument('--txt_eps', dest='txt_eps', type=float, default=0.01, help='perturbation budget of text data')
     parser.add_argument('--retrieve', dest='retrieve', action="store_true", default=False, help='retrieve images')
@@ -44,8 +44,13 @@ def add_attack_arguments(parser):
 
 
 def add_defense_arguments(parser):
-    parser.add_argument('--adv_method', dest='adv_method', type=str, default='mainstay', choices=['mainstay'],
-                        help='name of adversarial training method')
-    parser.add_argument('--lambda', dest='p_lambda', type=float, default=1.0, help='lambda for adversarial loss')
-    parser.add_argument('--mu', dest='p_mu', type=float, default=1e-4, help='mu for quantization loss')
+    parser.add_argument('--defense_method', dest='defense_method', type=str, default='mainstay', choices=['mainstay'],
+                        help='name of adversarial defense method')
+    parser.add_argument('--epochs', dest='epochs', type=int, default=20, help='number of training epochs')
+    parser.add_argument('--generator', dest='generator', default='PGD', help='adversarial examples generator')
+    parser.add_argument('--iteration', dest='iteration', type=int, default=7, help='iteration of adversarial attack')
+    parser.add_argument('--img_eps', dest='img_eps', type=float, default=8/255., help='perturbation budget of image data')
+    parser.add_argument('--txt_eps', dest='txt_eps', type=float, default=0.01, help='perturbation budget of text data')
+    parser.add_argument('--lambda', dest='lambda', type=float, default=1.0, help='lambda for adversarial loss')
+    parser.add_argument('--mu', dest='mu', type=float, default=1e-4, help='mu for quantization loss')
     return parser

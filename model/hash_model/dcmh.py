@@ -26,6 +26,12 @@ class DCMH(BaseCMH):
         self.label_buffer = self.label_buffer.cuda()
 
         self.B = torch.sign(self.F_buffer + self.G_buffer)
+
+    def set_buffer(self, F, G, label):
+        self.F_buffer.data = F.data
+        self.G_buffer.data = G.data
+        self.label_buffer.data = label.data
+        self.update_hash_codes()
     
     def update_hash_codes(self):
         self.B = torch.sign(self.F_buffer + self.G_buffer)

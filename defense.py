@@ -1,6 +1,8 @@
+import os
 import argparse
 import utils.argument as argument
-from mainstay_training import saat
+from utils.utils import setup_seed
+from mainstay_training import mainstay_training
 
 
 def parser_arguments():
@@ -12,8 +14,6 @@ def parser_arguments():
 
     # arguments for defense
     parser = argument.add_defense_arguments(parser)
-    parser.add_argument('--epochs', dest='epochs', type=int, default=20, help='number of training epochs')
-    parser.add_argument('--iteration', dest='iteration', type=int, default=7, help='iteration of adversarial attack')
 
     # arguments for dataset
     parser.add_argument('--batch_size', dest='batch_size', type=int, default=32, help='number of images in one batch')
@@ -21,9 +21,13 @@ def parser_arguments():
 
 
 if __name__ == '__main__':
+    setup_seed(seed=1)
+    
     args = parser_arguments()
-    print("Current Defense Method: {}".format(args.adv_method))
-    if args.adv_method == 'mainstay':
-        saat(args)
+    os.environ["CUDA_VISIBLE_DEVICES"] = args.device
+
+    print("Defense Method: {}".format(args.defense_method))
+    if args.defense_method == 'mainstay':
+        mainstay_training(args)
     else:
-        raise NotImplementedError("Method {} not implemented".format(args.adv_method))
+        raise NotImplementedError("Method {} not implemented".format(args.defense_method))
