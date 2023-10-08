@@ -31,3 +31,15 @@ class BaseCMH(nn.Module):
     @abstractmethod
     def loss_function(self):
         pass
+    
+    @abstractmethod
+    def encode_img(self, img):
+        pass
+    
+    @abstractmethod
+    def encode_txt(self, txt):
+        pass
+
+    @abstractmethod
+    def forward(self, img, txt):
+        pass

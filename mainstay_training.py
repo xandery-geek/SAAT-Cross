@@ -29,11 +29,6 @@ def mainstay_training(args):
         torch.from_numpy(train_labels).cuda()
 
     model.train()
-    F_ben = torch.zeros(num_train, args.bit).cuda()
-    G_ben = torch.zeros(num_train, args.bit).cuda()
-    F_ben.data = train_img_codes.data
-    G_ben.data = train_txt_codes.data
-
     # initialize buffers of hashing model
     if hasattr(model, 'F_buffer') and hasattr(model, 'G_buffer') and hasattr(model, 'label_buffer'):
         model.F_buffer.data = train_img_codes.data
@@ -41,8 +36,8 @@ def mainstay_training(args):
         model.label_buffer.data = train_labels.data
         model.update_hash_codes()
 
-    optimizer_img = torch.optim.SGD(model.img_net.parameters(), lr=0.05, weight_decay=1e-5)
-    optimizer_txt = torch.optim.SGD(model.txt_net.parameters(), lr=0.05, weight_decay=1e-5)
+    optimizer_img = torch.optim.SGD(model.img_net.parameters(), lr=0.03, weight_decay=1e-5)
+    optimizer_txt = torch.optim.SGD(model.txt_net.parameters(), lr=0.03, weight_decay=1e-5)
     lr_steps = args.epochs * len(train_loader)
     scheduler_img = torch.optim.lr_scheduler.MultiStepLR(optimizer_img, milestones=[lr_steps/2, lr_steps*3/4], gamma=0.1)
     scheduler_txt = torch.optim.lr_scheduler.MultiStepLR(optimizer_txt, milestones=[lr_steps/2, lr_steps*3/4], gamma=0.1)
@@ -57,8 +52,8 @@ def mainstay_training(args):
             img, txt, label = img.cuda(), txt.cuda(), label.cuda()
 
             # inner minimization aims to generate adversarial examples
-            mainstay_code = generate_mainstay_code(label, model.F_buffer, train_labels)
-            adv_img = img_generator(img, mainstay_code, modality='image')
+            mainstay_code = generate_mainstay_code(label, model.G_buffer, train_labels)
+            adv_img = img_generator(img, mainstay_code, 'image')
 
             # outer maximization aims to optimize parameters of model
             model.zero_grad()
@@ -83,12 +78,12 @@ def mainstay_training(args):
             img, txt, label = img.cuda(), txt.cuda(), label.cuda()
 
             # inner minimization aims to generate adversarial examples
-            mainstay_code = generate_mainstay_code(label, model.G_buffer, train_labels)
-            adv_txt = txt_generator(txt, mainstay_code, modality='text')
+            mainstay_code = generate_mainstay_code(label, model.F_buffer, train_labels)
+            adv_txt = txt_generator(txt, mainstay_code, 'text')
 
             # outer maximization aims to optimize parameters of model
             model.zero_grad()
-            adv_code = model.encode_img(adv_txt)
+            adv_code = model.encode_txt(adv_txt)
             loss_ben = model.loss_function((img, txt, label, idx), 1)
             loss_adv = - adv_loss(adv_code, mainstay_code)
             loss_qua = torch.mean((adv_code - torch.sign(adv_code)) ** 2)
@@ -105,10 +100,7 @@ def mainstay_training(args):
 
         print('Epoch: %3d/%3d\tText training loss: %3.5f \n' % (epoch, args.epochs, txt_loss/len(train_loader)))
 
-    if args.lam != 1.0 or args.mu != 1e-4:
-        robust_model_name = 'saat_{}_{}_{}'.format(victim_model_name, args.lam, args.mu)
-    else:
-        robust_model_name = 'saat_{}'.format(victim_model_name)
+    robust_model_name = 'mainstay_{}'.format(victim_model_name)
 
     check_dir('log/{}'.format(robust_model_name))
     robust_model_path = 'checkpoint/{}.pth'.format(robust_model_name)

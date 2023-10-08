@@ -17,10 +17,11 @@ def parser_arguments():
     parser = argument.add_model_arguments(parser)
     parser = argument.add_attack_arguments(parser)
     
-    # arguments for defense
+    # arguments for attacking models with adversarial training
     parser.add_argument('--adv', dest='adv', action="store_true", default=False,
                         help='load model with adversarial training')
-    parser = argument.add_defense_arguments(parser)
+    parser.add_argument('--adv_method', dest='adv_method', type=str, default='mainstay',
+                        help='name of adversarial training method')
 
     # arguments for dataset
     parser.add_argument('--bs', dest='bs', type=int, default=128, help='number of images in one batch')

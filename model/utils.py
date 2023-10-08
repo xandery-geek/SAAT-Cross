@@ -16,10 +16,8 @@ def load_model(path):
 
 def get_victim_model_name(args):
     attack_model = '{}_{}_{}-{}_{}'.format(args.dataset, args.hash_method, args.img_backbone, args.txt_backbone, args.bit)
-    if args.adv:
+    if hasattr(args, 'adv') and args.adv:
         attack_model = '{}_{}'.format(args.adv_method, attack_model)
-        if args.p_lambda != 1.0 or args.p_mu != 1e-4:
-            attack_model = '{}_{}_{}'.format(attack_model, args.p_lambda, args.p_mu)
     return attack_model
 
 
@@ -43,7 +41,7 @@ def generate_code_ordered(model, data_loader, num_data, bit, num_class):
     txt_codes = torch.zeros([num_data, bit])
     labels = torch.zeros(num_data, num_class)
 
-    for img, txt, label, idx in data_loader:
+    for img, txt, label, idx in tqdm(data_loader):
         img, txt = img.cuda(), txt.cuda()
         img_code, txt_code = model(img, txt)
         img_codes[idx, :] = img_code.data.cpu()

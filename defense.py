@@ -16,7 +16,7 @@ def parser_arguments():
     parser = argument.add_defense_arguments(parser)
 
     # arguments for dataset
-    parser.add_argument('--batch_size', dest='batch_size', type=int, default=32, help='number of images in one batch')
+    parser.add_argument('--bs', dest='bs', type=int, default=128, help='number of images in one batch')
     return parser.parse_args()
 
 

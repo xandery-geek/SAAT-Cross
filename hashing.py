@@ -57,9 +57,12 @@ class Hashing(object):
         return args
 
     def load_data(self):
-        train_loader, _ = get_data_loader(self.args.data_dir, self.args.dataset, 'train', batch_size=self.args.bs, shuffle=True)
-        test_loader, _ = get_data_loader(self.args.data_dir, self.args.dataset, 'test', batch_size=self.args.bs, shuffle=False) 
-        database_loader, _ = get_data_loader(self.args.data_dir, self.args.dataset, 'database', batch_size=self.args.bs, shuffle=False) 
+        train_loader, _ = get_data_loader(self.args.data_dir, self.args.dataset, 'train', 
+                                          batch_size=self.args.bs, shuffle=True)
+        test_loader, _ = get_data_loader(self.args.data_dir, self.args.dataset, 'test', 
+                                         batch_size=self.args.bs, shuffle=False) 
+        database_loader, _ = get_data_loader(self.args.data_dir, self.args.dataset, 'database', 
+                                             batch_size=self.args.bs, shuffle=False) 
         
         return train_loader, test_loader, database_loader
 
@@ -189,10 +192,9 @@ class Hashing(object):
             record_loss.append(loss)
             self.adjust_learning_rate()
 
-            if (epoch + 1) % self.args.val_interval == 0:
-                save_name = self.model_name + '_epoch_{}.pth'.format(epoch)
-                torch.save(self.model, os.path.join(self.args.ckpt, save_name))
-                self.test()
+            # if (epoch + 1) % self.args.val_interval == 0:        
+        torch.save(self.model, os.path.join(self.args.ckpt, self.model_name + '.pth'))
+        self.test()
 
     def test(self):
         self.print_log('>>>Testing MAP<<<')
@@ -264,7 +266,7 @@ def parser_arguments():
     parser.add_argument('--momentum', dest='momentum', type=float, default=0.9, help='momentum for SGD')
     parser.add_argument('--wd', dest='wd', type=float, default=5e-4, help='weight decay for SGD')
     parser.add_argument('--val_interval', dest='val_interval', type=int, default=-1, help='interval for validation')
-    parser.add_argument('--strategy', dest='strategy', type=str, default='epoch', choices=['batch', 'epoch'], help='training strategy')
+    parser.add_argument('--strategy', dest='strategy', type=str, default='batch', choices=['batch', 'epoch'], help='training strategy')
 
     parser.add_argument('--bs', dest='bs', type=int, default=128, help='number of images in one batch')
     
