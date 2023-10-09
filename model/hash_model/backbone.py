@@ -162,7 +162,7 @@ class ImgNet(nn.Module):
                           resnet_model.layer3,
                           resnet_model.layer4,
                           resnet_model.avgpool]
-        self.feature_layers = nn.Sequential(feature_layers)
+        self.feature_layers = nn.Sequential(*feature_layers)
 
         self.fc = nn.Conv2d(in_channels=resnet_model.fc.in_features, out_channels=hash_bit, kernel_size=1)
 
@@ -177,52 +177,83 @@ class ImgNet(nn.Module):
         return hash.squeeze(), feature.squeeze()
 
 
+def init_parameters_recursively(layer):
+    if isinstance(layer, nn.Sequential):
+        for sub_layer in layer:
+            init_parameters_recursively(sub_layer)
+    elif isinstance(layer, nn.Conv2d) or isinstance(layer, nn.Linear):
+        nn.init.normal_(layer.weight, std=0.01)
+        if layer.bias is not None:
+            nn.init.normal_(layer.bias, std=0.01)
+    else:
+        return
+
+
 class ScaleBlock(nn.Module):
-    def __init__(self, level, txt_dim):
+    def __init__(self, scale, n_filters=100):
         super(ScaleBlock, self).__init__()
-        self.txt_dim = txt_dim
-        kernel_size = (1, 1, 5 * level, 1)
-        stride = (1, 1, 5 * level, 1)
-        self.avg_pool = nn.AvgPool2d(kernel_size=kernel_size, stride=stride, padding=0)
-        self.fc1 = nn.Conv2d(1, 1, kernel_size=1)
-        self.relu = nn.ReLU()
+        kernel_size = (1, 5 * scale)
+        stride = (1, 5 * scale)
+        
+        self.layers = nn.Sequential(
+            nn.Conv2d(1, n_filters, kernel_size=kernel_size, stride=stride, padding=0),
+            nn.ReLU()
+        )
+    
+        self.init_parameters()
+
+    def init_parameters(self):
+        init_parameters_recursively(self.layers)
 
     def forward(self, x):
-        x = self.avg_pool(x)
-        x = self.relu(self.fc1(x))
-        x = F.interpolate(x, size=(1, self.txt_dim), mode='nearest')
+        x = self.layers(x) # (B, 1, 1, L) -> (B, n_filters, 1, L/kernel)
+        x = F.avg_pool2d(x, (1, x.shape[3])) # (B, n_filters, 1, 1)
         return x
 
 
 class MultiScaleTxt(nn.Module):
-    def __init__(self):
-        scales = [10, 6, 3, 2, 1]
-        self.module_list = []
-        for scale in scales:
-            self.module_list.append(ScaleBlock(scale))
+    def __init__(self, n_filters, scales):
+        super(MultiScaleTxt, self).__init__()
+
+        self.module_list = nn.ModuleList([
+            ScaleBlock(scale, n_filters) for scale in scales])
 
     def forward(self, x):
-        y = [x]
+        y = []
         for module in self.module_list:
             y.append(module(x))
-        return torch.cat(y, dim=-1)
+        return torch.cat(y, dim=1)
 
 
 class MultiScaleTxtNet(nn.Module):
-    def __init__(self, input_dim, bit, feat_dim=512):
+    def __init__(self, bit, feat_dim=512):
         super(MultiScaleTxtNet, self).__init__()
-        self.ms_module = MultiScaleTxt()
-        self.fc1 = nn.Conv2d(input_dim, 4096, kernel_size=(1, 6))
-        self.fc2 = nn.Conv2d(4096, feat_dim, kernel_size=1)
-        self.fc3 = nn.Conv2d(feat_dim, bit, kernel_size=1)
-        self.relu = nn.ReLU()
-        self.tanh = nn.Tanh()
+        scales = [1, 2, 3, 6, 10]
+        n_filters = 100
+        self.ms_module = MultiScaleTxt(n_filters, scales)
+        self.features = nn.Sequential(
+            nn.Conv2d(len(scales) * n_filters, 4096, kernel_size=1),
+            nn.ReLU(),
+            nn.Conv2d(4096, feat_dim, kernel_size=1),
+            nn.ReLU()
+        )
+
+        self.hash_layers = nn.Sequential(
+            nn.Conv2d(feat_dim, bit, kernel_size=1),
+            nn.Tanh(),
+        )
+
+        self.init_parameters()
+
+    def init_parameters(self):
+        init_parameters_recursively(self.features)
+        init_parameters_recursively(self.hash_layers)
 
     def forward(self, x):
+        x = x.unsqueeze(1).unsqueeze(1)
         x = self.ms_module(x)
-        x = self.relu(self.fc1(x))
-        feature = self.relu(self.fc2(x))
-        hash = self.tanh(self.fc3(feature))
+        feature = self.features(x)
+        hash = self.hash_layers(feature)
         
         return hash.squeeze(), feature.squeeze()
 
@@ -230,16 +261,28 @@ class MultiScaleTxtNet(nn.Module):
 class LabNet(nn.Module):
     def __init__(self, bit, num_class, feat_dim=512):
         super(LabNet, self).__init__()
-        self.fc1 = nn.Conv2d(num_class, 4096, kernel_size=1)
-        self.fc2 = nn.Conv2d(4096, feat_dim, kernel_size=1)
-        self.fc3 = nn.Conv2d(feat_dim, bit, kernel_size=1)
-        self.relu = nn.ReLU()
-        self.tanh = nn.Tanh()
+        self.features = nn.Sequential(
+            nn.Conv2d(1, 4096, kernel_size=(1, num_class)),
+            nn.ReLU(),
+            nn.modules.normalization.LocalResponseNorm(size=4, alpha=0.0001, beta=0.75, k=2.0),
+            nn.Conv2d(4096, feat_dim, kernel_size=1),
+            nn.ReLU()
+        )
+        self.hash_layers = nn.Sequential(
+            nn.Conv2d(feat_dim, bit, kernel_size=1),
+            nn.Tanh(),
+        )
+
+        self.init_parameters()
+
+    def init_parameters(self):
+        init_parameters_recursively(self.features)
+        init_parameters_recursively(self.hash_layers)
 
     def forward(self, x):
-        x = self.relu(self.fc1(x))
-        feature = self.relu(self.fc2(x))
-        hash = self.tanh(self.fc3(feature))
+        x = x.unsqueeze(1).unsqueeze(1)
+        feature = self.features(x)
+        hash = self.hash_layers(feature)
         
         return hash.squeeze(), feature.squeeze()
 
@@ -247,26 +290,39 @@ class LabNet(nn.Module):
 class LabelDecoder(nn.Module):
     def __init__(self, num_class, feat_dim=512):
         super(LabelDecoder, self).__init__()
-        self.fc = nn.Conv2d(feat_dim, num_class, kernel_size=1)
-        self.sigmoid = nn.Sigmoid()
+        self.layers = nn.Sequential(
+            nn.Conv2d(feat_dim, num_class, kernel_size=1),
+            nn.Sigmoid()
+        )
+        self.init_parameters()
+
+    def init_parameters(self):
+        init_parameters_recursively(self.layers)
     
     def forward(self, x):
-        return self.sigmoid(self.fc(x))
+        x = x.unsqueeze(-1).unsqueeze(-1)
+        x = self.layers(x)
+        return x.squeeze()
 
 
 class Discriminator(nn.Module):
     def __init__(self, feat_dim=512) -> None:
-        self.conv1 = nn.Conv2d(feat_dim, feat_dim, kernel_size=1)
-        self.conv2 = nn.Conv2d(feat_dim, feat_dim//2, kernel_size=1)
-        self.conv3 = nn.Conv2d(feat_dim//2, 1, kernel_size=1)
-        self.relu = nn.ReLU()
-        self.dropout = nn.Dropout()
+        super(Discriminator, self).__init__()
+
+        self.layers = nn.Sequential(
+            nn.Conv2d(feat_dim, feat_dim, kernel_size=1),
+            nn.ReLU(),
+            nn.Conv2d(feat_dim, feat_dim//2, kernel_size=1),
+            nn.ReLU(),
+            nn.Conv2d(feat_dim//2, 1, kernel_size=1)
+        )
+        self.init_parameters()
+
+    def init_parameters(self):
+        init_parameters_recursively(self.layers)
 
     def forward(self, x):
-        x = self.relu(self.conv1(x))
-        x = self.dropout(x)
-        x = self.relu(self.conv2(x))
-        x = self.dropout(x)
-        x = self.conv3(x)
+        x = x.unsqueeze(-1).unsqueeze(-1)
+        x = self.layers(x)
 
-        return x
+        return x.squeeze()
