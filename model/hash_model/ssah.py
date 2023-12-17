@@ -63,12 +63,13 @@ class SSAH(nn.Module):
         txt_code, _ = self.txt_net(txt)
         return img_code, txt_code
     
-    def img_forward(self, img, idx):
+    def img_forward(self, img, idx, lab):
         code, feat = self.img_net(img)
         label = self.img_decoder(feat)
 
         self.F_buffer[idx, :] = code.data
         self.IF_buffer[idx, :] = feat.data
+        self.label_buffer[idx, :] = lab.data
         return code, feat, label
     
     def txt_forward(self, txt, idx):
@@ -119,14 +120,34 @@ class SSAH(nn.Module):
     
     def neglog_loss(self, x1, x2, sim):
         theta = 0.5 * (x1 @ x2.t())
-        return - torch.mean(sim * theta - nn.functional.softplus(theta))
+        return self.mse_loss(sim * theta, nn.functional.softplus(theta))
 
     def semantic_loss(self, hash, feat, label_pred, label_gt):
         sim = self.calc_neighbor(label_gt, self.label_buffer)
-        feat_logloss = self.neglog_loss(feat, self.LF_buffer, sim)
-        hash_logloss = self.neglog_loss(hash, self.H_buffer, sim)
+        feat_logloss = self.neglog_loss(feat, self.IF_buffer, sim)
+        hash_logloss = self.neglog_loss(hash, self.F_buffer, sim)
         quan_loss = self.mse_loss(hash, torch.sign(hash).detach())
         rec_loss = self.mse_loss(label_pred, label_gt)
 
         loss = self.alpha * feat_logloss + self.gamma * hash_logloss + self.eta * quan_loss + self.beta * rec_loss
+        return loss, [feat_logloss.item(), hash_logloss.item(), quan_loss.item(), rec_loss.item()]
+    
+    @torch.no_grad()
+    def total_loss(self, modality='img'):
+        if modality == 'img':
+            feat = self.IF_buffer
+            hash = self.F_buffer
+        elif modality == 'txt':
+            feat = self.TF_buffer
+            hash = self.G_buffer
+        else:
+            feat = self.LF_buffer
+            hash = self.H_buffer
+
+        sim = self.calc_neighbor(self.label_buffer, self.label_buffer)
+        feat_logloss = self.neglog_loss(feat, self.IF_buffer, sim)
+        hash_logloss = self.neglog_loss(hash, self.F_buffer, sim)
+        quan_loss = self.mse_loss(hash, torch.sign(hash).detach())
+
+        loss = self.alpha * feat_logloss + self.gamma * hash_logloss + self.eta * quan_loss
         return loss

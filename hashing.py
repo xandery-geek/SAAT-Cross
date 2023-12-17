@@ -224,27 +224,6 @@ class Hashing(object):
                                            ' '.join(map(str, db_txt_codes[i])),
                                            ' '.join(map(str, db_labels[i]))), file=f)
 
-    # def retrieve(self, batch=0, top=10):
-    #     self.print_log('>>>Retrieve relevant images<<<')
-    #     if not args.load:
-    #         self.model = self.load_model()
-    #     self.model.eval()
-
-    #     # get data batch
-    #     images, labels, _ = get_batch(self.test_loader, batch)
-    #     # calculate hash code
-    #     outputs = self.model(images.cuda())
-    #     outputs = outputs.data.cpu()
-    #     database_codes, _ = self.load_database()
-
-    #     images_arr, labels_arr = retrieve_images(images.numpy(), labels.numpy(), outputs, database_codes, top,
-    #                                              args.data_dir, args.dataset)
-
-    #     print("Writing retrieve images of database to {}".format(self.log_dir))
-    #     np.save(os.path.join(self.log_dir, 'retrieve_images_{}.npy'.format(batch)), images_arr)
-    #     np.save(os.path.join(self.log_dir, 'retrieve_labels_{}.npy'.format(batch)), labels_arr)
-    
-
 def parser_arguments():
     parser = argparse.ArgumentParser()
     
